@@ -1,0 +1,42 @@
+build
+mx.scratch
+!.settings
+
+# ===== Build output =====
+Debug/
+Release/
+build/
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+
+# ===== STM32CubeIDE =====
+.settings/
+*.launch
+.metadata/
+
+# ===== VS Code =====
+.vscode/
+
+# ===== OS junk =====
+.DS_Store
+Thumbs.db
+
+# ===== Toolchain files =====
+*.o
+*.d
+*.su
+*.cyclo
+*.stackdump
+
+# ===== CMake =====
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ===== Backup files =====
+*~
+*.swp
