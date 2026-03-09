@@ -11,7 +11,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "modbus_crc.h"
+#include <stdint.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,6 +56,42 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t uart1_tx_data[8];
+uint8_t uart1_rx_data[15];
+uint16_t recv_data[2];
+
+void modbus_tx_data(uint8_t slaveAddress){
+	uart1_tx_data[0] = slaveAddress; // slave address 0x02
+	uart1_tx_data[1] = 0x03; // Function code for Read Input Registers (0x03)
+	uart1_tx_data[2] = 0x02; 
+	uart1_tx_data[3] = 0x22;
+	uart1_tx_data[4] = 0x00;
+	uart1_tx_data[5] = 0x01;
+	
+	// CRC Check function
+	uint16_t crc = crc16(uart1_tx_data, 6);
+	uart1_tx_data[6] = crc & 0xFF;
+	uart1_tx_data[7] = (crc >> 8) & 0xFF;
+
+
+	// sending the uart1_tx_data array
+	HAL_UART_Transmit(&huart1, uart1_tx_data, 8, 1000);
+
+  // --- RECEIVE ---
+    if (HAL_UART_Receive(&huart1, uart1_rx_data, 7, 200) == HAL_OK)
+    {
+        uint16_t crc_rx = (uart1_rx_data[6] << 8) | uart1_rx_data[5];
+        uint16_t crc_calc = crc16(uart1_rx_data, 5);
+
+        if (crc_rx == crc_calc)
+        {
+            uint16_t distance = (uart1_rx_data[3] << 8) | uart1_rx_data[4]; //! NEEDS TO READ THE RX AND SAVE IT
+            HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+            distance = distance *1;
+        }
+    }
+
+}
 /* USER CODE END 0 */
 
 /**
@@ -104,19 +141,23 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  
   while (1)
   {
-      if (HAL_UART_Receive(&huart1, &byte, 1, HAL_MAX_DELAY) == HAL_OK)
-      {
+    modbus_tx_data(0x02); // Send Modbus request to slave address 0x02
+    HAL_Delay(1000);
+      //! UART AND CAN TEST
+      // if (HAL_UART_Receive(&huart1, &byte, 1, HAL_MAX_DELAY) == HAL_OK)
+      // {
           // HAL_UART_Transmit(&huart1, &byte, 1, HAL_MAX_DELAY);
 
-          TxData[0] = byte;
+          // TxData[0] = byte;
 
-          while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
-          HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+          // while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
+          // HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
-          HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      }
+          // HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+      // }
   }
   /* USER CODE END 3 */
 }
@@ -234,7 +275,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -354,3 +395,4 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+    
