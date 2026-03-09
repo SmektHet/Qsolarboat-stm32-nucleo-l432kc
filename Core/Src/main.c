@@ -32,21 +32,22 @@
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan1;
-
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 CAN_TxHeaderTypeDef TxHeader;
-uint8_t TxData[8];
-uint32_t TxMailbox;
-uint8_t byte;
+uint8_t uart1_tx_data[8];
+uint8_t uart1_rx_data[15];
+uint16_t recv_data[2];
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_USART1_UART_Init(void);
@@ -56,10 +57,6 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint8_t uart1_tx_data[8];
-uint8_t uart1_rx_data[15];
-uint16_t recv_data[2];
-
 void modbus_tx_data(uint8_t slaveAddress){
 	uart1_tx_data[0] = slaveAddress; // slave address 0x02
 	uart1_tx_data[1] = 0x03; // Function code for Read Input Registers (0x03)
@@ -73,24 +70,27 @@ void modbus_tx_data(uint8_t slaveAddress){
 	uart1_tx_data[6] = crc & 0xFF;
 	uart1_tx_data[7] = (crc >> 8) & 0xFF;
 
-
 	// sending the uart1_tx_data array
 	HAL_UART_Transmit(&huart1, uart1_tx_data, 8, 1000);
+}
 
-  // --- RECEIVE ---
-    if (HAL_UART_Receive(&huart1, uart1_rx_data, 7, 200) == HAL_OK)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if(huart->Instance == USART1)
     {
         uint16_t crc_rx = (uart1_rx_data[6] << 8) | uart1_rx_data[5];
         uint16_t crc_calc = crc16(uart1_rx_data, 5);
 
         if (crc_rx == crc_calc)
         {
-            uint16_t distance = (uart1_rx_data[3] << 8) | uart1_rx_data[4]; //! NEEDS TO READ THE RX AND SAVE IT
+            uint16_t distance = (uart1_rx_data[3] << 8) | uart1_rx_data[4];
             HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-            distance = distance *1;
+            distance = distance*1;
         }
-    }
 
+        // restart DMA reception
+        HAL_UART_Receive_DMA(&huart1, uart1_rx_data, 7);
+    }
 }
 /* USER CODE END 0 */
 
@@ -123,9 +123,11 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_CAN1_Init();
   MX_USART1_UART_Init();
+  HAL_UART_Receive_DMA(&huart1, uart1_rx_data, 7);
   /* USER CODE BEGIN 2 */
   /* Start CAN peripheral */
   HAL_CAN_Start(&hcan1);
@@ -141,23 +143,13 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  
   while (1)
   {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
     modbus_tx_data(0x02); // Send Modbus request to slave address 0x02
     HAL_Delay(1000);
-      //! UART AND CAN TEST
-      // if (HAL_UART_Receive(&huart1, &byte, 1, HAL_MAX_DELAY) == HAL_OK)
-      // {
-          // HAL_UART_Transmit(&huart1, &byte, 1, HAL_MAX_DELAY);
-
-          // TxData[0] = byte;
-
-          // while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
-          // HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
-
-          // HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      // }
   }
   /* USER CODE END 3 */
 }
@@ -275,7 +267,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 112500;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -326,6 +318,22 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
@@ -395,4 +403,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-    
