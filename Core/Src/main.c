@@ -12,6 +12,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "modbus_crc.h"
+#include "stm32l4xx_hal.h"
 #include <stdint.h>
 /* USER CODE END Includes */
 
@@ -22,7 +23,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define UART_RX_BUFFER_SIZE 128
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -38,9 +39,6 @@ DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 CAN_TxHeaderTypeDef TxHeader;
-uint8_t uart1_tx_data[8];
-uint8_t uart1_rx_data[15];
-uint16_t recv_data[2];
 
 /* USER CODE END PV */
 
@@ -57,13 +55,26 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t uart1_tx_data[8];
+uint8_t uart1_rx_data[15];
+uint8_t uart1_rx_buffer[UART_RX_BUFFER_SIZE];
+uint8_t current_slave = 0x02;
+
 void modbus_tx_data(uint8_t slaveAddress){
-	uart1_tx_data[0] = slaveAddress; // slave address 0x02
-	uart1_tx_data[1] = 0x03; // Function code for Read Input Registers (0x03)
-	uart1_tx_data[2] = 0x02; 
-	uart1_tx_data[3] = 0x22;
-	uart1_tx_data[4] = 0x00;
-	uart1_tx_data[5] = 0x01;
+	uart1_tx_data[0] = slaveAddress; // slave address 0x01 and 0x02
+  if (slaveAddress == 0x01 || slaveAddress == 0x02) {
+    uart1_tx_data[1] = 0x03; // Function code for Read holding Registers (0x03)
+    uart1_tx_data[2] = 0x02; // Register address (0x0222)
+    uart1_tx_data[3] = 0x22; 
+    uart1_tx_data[4] = 0x00; // Number of registers to read (0x0001)
+    uart1_tx_data[5] = 0x01;
+  } else if (slaveAddress == 0x50) {
+    uart1_tx_data[1] = 0x03; // Function code for Read holding Registers (0x03)
+    uart1_tx_data[2] = 0x00; // Register address (0x0030)
+    uart1_tx_data[3] = 0x30; 
+    uart1_tx_data[4] = 0x00; // Number of registers to read (0x0009)
+    uart1_tx_data[5] = 0x09;
+  }
 	
 	// CRC Check function
 	uint16_t crc = crc16(uart1_tx_data, 6);
@@ -74,22 +85,24 @@ void modbus_tx_data(uint8_t slaveAddress){
 	HAL_UART_Transmit(&huart1, uart1_tx_data, 8, 1000);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
     if(huart->Instance == USART1)
     {
-        uint16_t crc_rx = (uart1_rx_data[6] << 8) | uart1_rx_data[5];
-        uint16_t crc_calc = crc16(uart1_rx_data, 5);
-
-        if (crc_rx == crc_calc)
+        if(Size >= 5)
         {
-            uint16_t distance = (uart1_rx_data[3] << 8) | uart1_rx_data[4];
-            HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-            distance = distance*1;
+            uint16_t crc_rx = uart1_rx_buffer[Size-2] | (uart1_rx_buffer[Size-1] << 8);
+            uint16_t crc_calc = crc16(uart1_rx_buffer, Size-2);
+
+            if(crc_rx == crc_calc)
+            {
+                HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+            }
         }
 
-        // restart DMA reception
-        HAL_UART_Receive_DMA(&huart1, uart1_rx_data, 7);
+        // restart reception
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
+        __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
     }
 }
 /* USER CODE END 0 */
@@ -127,33 +140,53 @@ int main(void)
   MX_USART2_UART_Init();
   MX_CAN1_Init();
   MX_USART1_UART_Init();
-  HAL_UART_Receive_DMA(&huart1, uart1_rx_data, 7);
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
   /* USER CODE BEGIN 2 */
+
   /* Start CAN peripheral */
   HAL_CAN_Start(&hcan1);
-
-  /* Configure CAN TX header */
   TxHeader.StdId = 0x123;
   TxHeader.ExtId = 0;
   TxHeader.IDE = CAN_ID_STD;
   TxHeader.RTR = CAN_RTR_DATA;
   TxHeader.DLC = 1; // 8 
   TxHeader.TransmitGlobalTime = DISABLE;
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t last_request_time = 0;
+  uint8_t waiting_for_response = 1;
   while (1)
   {
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-    modbus_tx_data(0x02); // Send Modbus request to slave address 0x02
-    HAL_Delay(1000);
-  }
+    // /* USER CODE BEGIN 3 */
+    if(waiting_for_response && (HAL_GetTick() - last_request_time > 25))
+        {
+            waiting_for_response = 0;
+
+            // switch sensor
+            if(current_slave == 0x02)
+                current_slave = 0x50;
+            else
+                current_slave = 0x02;
+
+            // HAL_Delay(10);
+            modbus_tx_data(current_slave);
+
+            last_request_time = HAL_GetTick();
+            waiting_for_response = 1;
+        }
+      }
   /* USER CODE END 3 */
 }
 
+
+
+//! ------------------ DON'T EDIT BELOW THIS LINE ------------------
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -267,7 +300,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 112500;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -302,7 +335,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 9600;
+  huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
