@@ -40,16 +40,18 @@ add_subdirectory(cmake/stm32cubemx)
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
+    Core/Inc/Servo.h
 )
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    ICM20948/icm20948.c
+    Core/Src/Servo.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
+    ICM20948
 )
 
 # Add project symbols (macros)
