@@ -20,7 +20,7 @@ void Modbus_Send_Request(UART_HandleTypeDef *huart, uint8_t addr)
         tx_data[3] = 0x22; 
         tx_data[4] = 0x00; // Number of registers to read (0x0001)
         tx_data[5] = 0x01;
-    } else if (addr == 0x50) {
+    } else if (addr == 0x50 || addr == 0x51 || addr == 0x52) {
         tx_data[2] = 0x00; // Register address (0x0034) start at AX
         tx_data[3] = 0x34; 
         tx_data[4] = 0x00; // Number of registers to read (0x000C) 12 registers for AX, AY, AZ, GX, GY, GZ, HX, HY, HZ, Roll, Pitch, Yaw
