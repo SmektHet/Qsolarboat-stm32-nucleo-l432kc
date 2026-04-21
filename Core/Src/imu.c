@@ -1,10 +1,9 @@
 #include "imu.h"
-#include <math.h>
 
 int IMU_Parse(uint8_t *rx, uint16_t len, IMU_Data *out)
 {
     if(len < 29) return -1;
-    if(rx[0] != 0x50 || rx[1] != 0x03) return -2;
+    if(rx[1] != 0x03) return -2;
     if(rx[2] != 24) return -3;
 
     int16_t raw[12];
@@ -24,16 +23,6 @@ int IMU_Parse(uint8_t *rx, uint16_t len, IMU_Data *out)
     }
 
     return 0;
-}
-
-float deg_to_rad(float deg) {
-    return deg * (M_PI / 180.0f);
-}
-
-float corrected_height(float distance_mm, float roll_rad, float pitch_rad)
-{
-    float cz = cosf(pitch_rad) * cosf(roll_rad);
-    return (distance_mm * cz) / 10.0f;
 }
 
 float foil_angle(float h_cm)
