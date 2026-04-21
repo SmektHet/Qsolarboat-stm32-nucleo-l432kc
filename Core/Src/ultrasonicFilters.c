@@ -36,3 +36,14 @@ float low_pass(float d, float d_prev, float alpha) {
 }
 
 float tilt_correction(){}
+
+
+float deg_to_rad(float deg) {
+    return deg * (M_PI / 180.0f);
+}
+
+float corrected_height(float distance_mm, float roll_rad, float pitch_rad)
+{
+    float cz = cosf(pitch_rad) * cosf(roll_rad);
+    return (distance_mm * cz) / 10.0f;
+}

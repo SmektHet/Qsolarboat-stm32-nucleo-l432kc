@@ -13,10 +13,8 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <string.h>
-#include "modbus_crc.h"
-#include "stm32l4xx_hal.h"
-#include "MadgwickAHRS.h"
 #include "imu.h"
+#include "stm32l4xx_hal.h"
 #include "uart_comm.h"
 /* USER CODE END Includes */
 
@@ -29,7 +27,7 @@
 /* USER CODE BEGIN PD */
 #define UART_RX_BUFFER_SIZE 128
 #define ACCUM_BUFFER_SIZE   256
-#define SENSOR_COUNT 2
+#define SENSOR_COUNT 4
 #define RESPONSE_TIMEOUT 50
 /* USER CODE END PD */
 
@@ -46,20 +44,16 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
-CAN_TxHeaderTypeDef TxHeader;
-IMU_Data data;
-uint8_t uart1_rx_buffer[UART_RX_BUFFER_SIZE];
-uint8_t rx_accum[ACCUM_BUFFER_SIZE];
-uint16_t rx_len = 0;
+CAN_TxHeaderTypeDef TxHeader;// Main, left, right
+extern IMU_Data imu_data[3]; // 0x50, 0x51, 0x52
+extern float distance[2]; //          0x01, 0x02
 uint32_t TxMailbox;
-
 
 uint32_t last_request_time = 0;
 uint8_t waiting_for_response = 1;
 //? 0x01 and 0x02 for ultrasonic sensors, 0x50 for the IMU
 //! The ultrasonic sensor may NOT be requested after each other, otherwise the response from the first one may be overwritten by the second
-// uint8_t sensor_addresses[SENSOR_COUNT] = {0x50,0x02, 0x50,0x02, 0x50};
-uint8_t sensor_addresses[SENSOR_COUNT] = {0x02, 0x50};
+uint8_t sensor_addresses[SENSOR_COUNT] = {0x02, 0x50, 0x51, 0x52};
 uint8_t current_sensor_index = 0;
 typedef enum {
     STATE_INIT = 0,
@@ -85,153 +79,6 @@ static void MX_TIM2_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint8_t can_data[2];
-void print_data(void)
-{
-    char msg[256];
-
-    int len = snprintf(msg, sizeof(msg),
-        "DIST: %.2f | ACC: %.2f %.2f %.2f | GYRO: %.2f %.2f %.2f | ANG: %.2f %.2f %.2f\r\n",
-        data.distance,
-        data.acc[0], data.acc[1], data.acc[2],
-        data.gyro[0], data.gyro[1], data.gyro[2],
-        data.angle[0], data.angle[1], data.angle[2]
-    );
-    int16_t angle = (int16_t)(data.angle[0] * 100);
-    can_data[0] = (uint8_t)(angle >> 8);
-    can_data[1] = (uint8_t)(angle);
-
-    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
-    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, (uint8_t*)(can_data), &TxMailbox);
-
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
-}
-
-void buffer_consume(uint16_t len)
-{
-    if(len >= rx_len)
-    {
-      rx_len = 0;
-        return;
-    }
-    memmove(rx_accum, rx_accum + len, rx_len - len);
-    rx_len -= len;
-  }
-
-uint16_t get_imu_frame_size(uint8_t *buf, uint16_t len)
-{
-    // minimal IMU frame
-    if(len < 7) return 0;
-
-    // Try to detect valid CRC dynamically
-    for(uint16_t size = 7; size <= len; size++)
-    {
-        uint16_t crc_rx = buf[size - 2] | (buf[size - 1] << 8);
-        uint16_t crc_calc = crc16(buf, size - 2);
-
-        if(crc_rx == crc_calc)
-        {
-            return size; // found valid frame
-        }
-    }
-
-    return 0;
-}
-
-void process_uart_stream(void)
-{
-  while(rx_len >= 5)
-  {
-    uint8_t addr = rx_accum[0];
-    if(addr == 0x01 || addr == 0x02)
-    {
-      if(rx_len < 7)
-          return;
-
-      uint16_t crc_rx = rx_accum[5] | (rx_accum[6] << 8);
-      uint16_t crc_calc = crc16(rx_accum, 5);
-
-      if(crc_rx == crc_calc)
-      { 
-          HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-          uint16_t value = (rx_accum[3] << 8) | rx_accum[4];
-          data.distance = (float)value;
-          buffer_consume(7);
-          continue;
-      }
-      else
-      {
-          // bad alignment → shift 1 byte
-          buffer_consume(1);
-          continue;
-      }
-    }
-
-    else if(addr == 0x50 || addr == 0x51 || addr == 0x52)
-    {
-      uint16_t imu_size = get_imu_frame_size(rx_accum, rx_len);
-
-      if(imu_size == 0 || rx_len < imu_size)
-          return; // wait for more data
-
-      if(IMU_Parse(rx_accum, imu_size, &data) == 0)
-      {   
-          HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-          print_data();
-          buffer_consume(imu_size);
-          continue;
-      }
-      else
-      {
-          // parsing failed → shift
-          buffer_consume(1);
-          continue;
-      }
-    }
-    else
-    {
-        buffer_consume(1);
-    }
-  }
-}
-
-
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
-{
-    if(huart->Instance != USART1) return;
-
-    // Prevent overflow
-    if((rx_len + Size) > ACCUM_BUFFER_SIZE)
-    {
-        rx_len = 0; // reset if overflow
-    }
-
-    // Append incoming fragment
-    memcpy(&rx_accum[rx_len], uart1_rx_buffer, Size);
-    rx_len += Size;
-
-    // Process accumulated stream
-    process_uart_stream();
-
-    // Restart DMA
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-}
-
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART1)
-    {
-        // Clear error flags
-        __HAL_UART_CLEAR_OREFLAG(huart);
-        __HAL_UART_CLEAR_FEFLAG(huart);
-        __HAL_UART_CLEAR_NEFLAG(huart);
-
-        // Restart DMA reception
-        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
-        __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-    }
-}
 /* USER CODE END 0 */
 
 /**
@@ -270,8 +117,7 @@ int main(void)
   MX_TIM2_Init();
 
   /* USER CODE BEGIN 2 */
-  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
-  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  UART_Comm_Init(&huart1);
 
   /* Start CAN peripheral */
   HAL_CAN_Start(&hcan1);
@@ -287,6 +133,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   uint32_t request_timestamp = 0;
+  uint8_t can_data[8];
   while (1)
   {
     switch(state)
@@ -300,7 +147,7 @@ int main(void)
 
       case STATE_SEND_REQUEST:
       {
-          HAL_Delay(1); // ensure previous frame done
+          HAL_Delay(1);
 
           Modbus_Send_Request(&huart1, sensor_addresses[current_sensor_index]);
           request_timestamp = HAL_GetTick();
@@ -323,18 +170,20 @@ int main(void)
         current_sensor_index++;
         if(current_sensor_index >= SENSOR_COUNT)
         {
-          float distance_mm = data.distance;
-          
-          float roll_rad = deg_to_rad(data.angle[0]);
-          float pitch_rad = deg_to_rad(data.angle[1]);
-          
-          float h_cm = corrected_height(distance_mm, roll_rad, pitch_rad);
-          float foil_deg = foil_angle(h_cm);
-          
-          char msg[64];
-          int len = snprintf(msg, sizeof(msg), "Foil: %.2f deg\r\n", foil_deg);
-          HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
           current_sensor_index = 0;
+
+          int8_t ch_left = corrected_height(distance[0], deg_to_rad(imu_data[1].angle[0]), deg_to_rad(imu_data[1].angle[1]));
+          int8_t ch_right = corrected_height(distance[1], deg_to_rad(imu_data[2].angle[0]), deg_to_rad(imu_data[2].angle[1]));
+          int8_t global_height = ch_left+ch_right/2;
+
+
+
+
+          int16_t angle = (int16_t)(imu_data[0].angle[0] * 100);
+          can_data[0] = (uint8_t)(angle >> 8);
+          can_data[1] = (uint8_t)(angle);
+          while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
+          HAL_CAN_AddTxMessage(&hcan1, &TxHeader, (uint8_t*)(can_data), &TxMailbox);
         }
           
           state = STATE_SEND_REQUEST;
