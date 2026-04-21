@@ -11,9 +11,13 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdint.h>
+#include <string.h>
+#include "modbus_crc.h"
 #include "stm32l4xx_hal.h"
-#include "Servo.h"
-
+#include "MadgwickAHRS.h"
+#include "imu.h"
+#include "uart_comm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -23,7 +27,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define UART_RX_BUFFER_SIZE 128
+#define ACCUM_BUFFER_SIZE   256
+#define SENSOR_COUNT 2
+#define RESPONSE_TIMEOUT 50
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -33,33 +40,44 @@
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan1;
-
-SPI_HandleTypeDef hspi1;
-
 TIM_HandleTypeDef htim2;
-
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 CAN_TxHeaderTypeDef TxHeader;
-uint8_t TxData[8];
+IMU_Data data;
+uint8_t uart1_rx_buffer[UART_RX_BUFFER_SIZE];
+uint8_t rx_accum[ACCUM_BUFFER_SIZE];
+uint16_t rx_len = 0;
 uint32_t TxMailbox;
-uint8_t byte; 
-
-//!variables here
 
 
-//!end of user variables
+uint32_t last_request_time = 0;
+uint8_t waiting_for_response = 1;
+//? 0x01 and 0x02 for ultrasonic sensors, 0x50 for the IMU
+//! The ultrasonic sensor may NOT be requested after each other, otherwise the response from the first one may be overwritten by the second
+// uint8_t sensor_addresses[SENSOR_COUNT] = {0x50,0x02, 0x50,0x02, 0x50};
+uint8_t sensor_addresses[SENSOR_COUNT] = {0x02, 0x50};
+uint8_t current_sensor_index = 0;
+typedef enum {
+    STATE_INIT = 0,
+    STATE_SEND_REQUEST,
+    STATE_WAIT_RESPONSE,
+    STATE_PROCESS_DATA
+} AppState;
+AppState state = STATE_INIT;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
@@ -67,6 +85,153 @@ static void MX_TIM2_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t can_data[2];
+void print_data(void)
+{
+    char msg[256];
+
+    int len = snprintf(msg, sizeof(msg),
+        "DIST: %.2f | ACC: %.2f %.2f %.2f | GYRO: %.2f %.2f %.2f | ANG: %.2f %.2f %.2f\r\n",
+        data.distance,
+        data.acc[0], data.acc[1], data.acc[2],
+        data.gyro[0], data.gyro[1], data.gyro[2],
+        data.angle[0], data.angle[1], data.angle[2]
+    );
+    int16_t angle = (int16_t)(data.angle[0] * 100);
+    can_data[0] = (uint8_t)(angle >> 8);
+    can_data[1] = (uint8_t)(angle);
+
+    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
+    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, (uint8_t*)(can_data), &TxMailbox);
+
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+}
+
+void buffer_consume(uint16_t len)
+{
+    if(len >= rx_len)
+    {
+      rx_len = 0;
+        return;
+    }
+    memmove(rx_accum, rx_accum + len, rx_len - len);
+    rx_len -= len;
+  }
+
+uint16_t get_imu_frame_size(uint8_t *buf, uint16_t len)
+{
+    // minimal IMU frame
+    if(len < 7) return 0;
+
+    // Try to detect valid CRC dynamically
+    for(uint16_t size = 7; size <= len; size++)
+    {
+        uint16_t crc_rx = buf[size - 2] | (buf[size - 1] << 8);
+        uint16_t crc_calc = crc16(buf, size - 2);
+
+        if(crc_rx == crc_calc)
+        {
+            return size; // found valid frame
+        }
+    }
+
+    return 0;
+}
+
+void process_uart_stream(void)
+{
+  while(rx_len >= 5)
+  {
+    uint8_t addr = rx_accum[0];
+    if(addr == 0x01 || addr == 0x02)
+    {
+      if(rx_len < 7)
+          return;
+
+      uint16_t crc_rx = rx_accum[5] | (rx_accum[6] << 8);
+      uint16_t crc_calc = crc16(rx_accum, 5);
+
+      if(crc_rx == crc_calc)
+      { 
+          HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+          uint16_t value = (rx_accum[3] << 8) | rx_accum[4];
+          data.distance = (float)value;
+          buffer_consume(7);
+          continue;
+      }
+      else
+      {
+          // bad alignment → shift 1 byte
+          buffer_consume(1);
+          continue;
+      }
+    }
+
+    else if(addr == 0x50 || addr == 0x51 || addr == 0x52)
+    {
+      uint16_t imu_size = get_imu_frame_size(rx_accum, rx_len);
+
+      if(imu_size == 0 || rx_len < imu_size)
+          return; // wait for more data
+
+      if(IMU_Parse(rx_accum, imu_size, &data) == 0)
+      {   
+          HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+          print_data();
+          buffer_consume(imu_size);
+          continue;
+      }
+      else
+      {
+          // parsing failed → shift
+          buffer_consume(1);
+          continue;
+      }
+    }
+    else
+    {
+        buffer_consume(1);
+    }
+  }
+}
+
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+    if(huart->Instance != USART1) return;
+
+    // Prevent overflow
+    if((rx_len + Size) > ACCUM_BUFFER_SIZE)
+    {
+        rx_len = 0; // reset if overflow
+    }
+
+    // Append incoming fragment
+    memcpy(&rx_accum[rx_len], uart1_rx_buffer, Size);
+    rx_len += Size;
+
+    // Process accumulated stream
+    process_uart_stream();
+
+    // Restart DMA
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        // Clear error flags
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        __HAL_UART_CLEAR_FEFLAG(huart);
+        __HAL_UART_CLEAR_NEFLAG(huart);
+
+        // Restart DMA reception
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
+        __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -98,51 +263,97 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_CAN1_Init();
   MX_USART1_UART_Init();
-  MX_SPI1_Init();
   MX_TIM2_Init();
+
   /* USER CODE BEGIN 2 */
-    //!init here
-  InitServo(htim2);
-  // __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 600);
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+
   /* Start CAN peripheral */
   HAL_CAN_Start(&hcan1);
-
-  /* Configure CAN TX header */
   TxHeader.StdId = 0x123;
   TxHeader.ExtId = 0;
   TxHeader.IDE = CAN_ID_STD;
   TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 1; // 8 
+  TxHeader.DLC = 2; 
   TxHeader.TransmitGlobalTime = DISABLE;
-  //! end of init
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t request_timestamp = 0;
   while (1)
   {
-    //!code here dingus
-    for (size_t i = 0; i < 10; i++)
+    switch(state)
     {
-      RunServo(i, htim2);
-      HAL_Delay(1000);
-    }
+      case STATE_INIT:
+      {
+          current_sensor_index = 0;
+          state = STATE_SEND_REQUEST;
+          break;
+      }
 
-    for (size_t i = 0; i < 10; i++)
-    {
-      RunServo(i, htim2);
-      HAL_Delay(1000);
+      case STATE_SEND_REQUEST:
+      {
+          HAL_Delay(1); // ensure previous frame done
+
+          Modbus_Send_Request(&huart1, sensor_addresses[current_sensor_index]);
+          request_timestamp = HAL_GetTick();
+
+          state = STATE_WAIT_RESPONSE;
+          break;
+      }
+
+      case STATE_WAIT_RESPONSE:
+      {
+          if ((HAL_GetTick() - request_timestamp) > RESPONSE_TIMEOUT) //! ADD RECIEVE FUNCTION FOR EARLIER RESPONSE
+          {
+              state = STATE_PROCESS_DATA;
+          }
+          break;
+      }
+
+      case STATE_PROCESS_DATA:
+      {
+        current_sensor_index++;
+        if(current_sensor_index >= SENSOR_COUNT)
+        {
+          float distance_mm = data.distance;
+          
+          float roll_rad = deg_to_rad(data.angle[0]);
+          float pitch_rad = deg_to_rad(data.angle[1]);
+          
+          float h_cm = corrected_height(distance_mm, roll_rad, pitch_rad);
+          float foil_deg = foil_angle(h_cm);
+          
+          char msg[64];
+          int len = snprintf(msg, sizeof(msg), "Foil: %.2f deg\r\n", foil_deg);
+          HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+          current_sensor_index = 0;
+        }
+          
+          state = STATE_SEND_REQUEST;
+          break;
+      }
+
+      default:
+      {
+          state = STATE_INIT;
+          break;
+      }
     }
-    //!dont code under here dingus
-    /* USER CODE END WHILE */
-    /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
 
+
+
+//! ------------------ DON'T EDIT BELOW THIS LINE ------------------
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -241,46 +452,6 @@ static void MX_CAN1_Init(void)
 }
 
 /**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -325,14 +496,10 @@ static void MX_TIM2_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
+  sConfigOC.Pulse = 1500;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -359,7 +526,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -394,7 +561,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 9600;
+  huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -410,6 +577,22 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
