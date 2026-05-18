@@ -7,11 +7,11 @@
 #include <string.h>
 #include "modbus_crc.h"
 #include "imu.h"
+#include "config.h"
+#include "ultrasonicFilters.h"
 
 #define LD3_Pin GPIO_PIN_3
 #define LD3_GPIO_Port GPIOB
-#define UART_RX_BUFFER_SIZE 128
-#define ACCUM_BUFFER_SIZE   256
 
 void UART_Restart_DMA(UART_HandleTypeDef *huart1);
 void Modbus_Send_Request(UART_HandleTypeDef *huart1, uint8_t slaveAddress);

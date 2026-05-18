@@ -40,21 +40,18 @@ add_subdirectory(cmake/stm32cubemx)
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc/modbus_crc.h
-    Core/Inc/MadgwickAHRS.h
     Core/Inc/uart_comm.h
     Core/Inc/imu.h
     Core/Inc/ultrasonicFilters.h
-    # Core/Inc/servo.h
+    Core/Inc/config.h
 )
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/modbus_crc.c
-    Core/Src/MadgwickAHRS.c
     Core/Src/uart_comm.c
     Core/Src/imu.c
     Core/Src/ultrasonicFilters.c
-    # Core/Src/servo.c
 )
 
 # Add include paths

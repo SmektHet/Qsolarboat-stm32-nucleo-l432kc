@@ -1,17 +1,26 @@
 #include "uart_comm.h"
+#include "stm32l4xx_hal_uart.h"
 
-extern UART_HandleTypeDef huart2;
+#ifdef DEBUG_PRINTS
+    extern UART_HandleTypeDef huart2;
+#endif
 
-/* ================= DATA ================= */
+FusedOrientation fusedOrientation;
 IMU_Data imu_data[3];   // 0x50, 0x51, 0x52
 float distance[2];      // 0x01, 0x02
+float corrected_distance[2];
 
 static uint8_t tx_data[8];
 uint8_t uart1_rx_buffer[UART_RX_BUFFER_SIZE];
 uint8_t rx_accum[ACCUM_BUFFER_SIZE];
 uint16_t rx_len = 0;
+extern uint8_t data_recieved;
 
-/* ================= HELPERS ================= */
+/**
+* \brief Maps an IMU address to its corresponding index in the imu_data array.
+ * \param addr The address of the IMU (0x50, 0x51, or 0x52).
+ * \return The index of the IMU in the imu_data array, or -1 if the address is invalid.
+*/
 static int imu_index(uint8_t addr)
 {
     if (addr >= 0x50 && addr <= 0x52)
@@ -19,6 +28,12 @@ static int imu_index(uint8_t addr)
     return -1;
 }
 
+/**
+* \brief Maps a distance sensor address to its corresponding index in the distance array.
+ * \param addr The address of the distance sensor (0x01 or 0x02).
+ * \return The index of the distance sensor in the distance array, or -1 if the address is invalid.
+ */
+ 
 static int dist_index(uint8_t addr)
 {
     if (addr == 0x01) return 0;
@@ -26,27 +41,36 @@ static int dist_index(uint8_t addr)
     return -1;
 }
 
-/* ================= DEBUG ================= */
-static void debug_print_bytes(const char *label, uint8_t *buf, uint16_t len)
-{
-    char msg[256];
-    int pos = snprintf(msg, sizeof(msg), "%s [%d]: ", label, len);
+#ifdef DEBUG_PRINTS
+    // Debug function to print byte arrays in hex format.
+    static void debug_print_bytes(const char *label, uint8_t *buf, uint16_t len)
+    {
+        char msg[256];
+        int pos = snprintf(msg, sizeof(msg), "%s [%d]: ", label, len);
 
-    for (uint16_t i = 0; i < len && pos < sizeof(msg) - 4; i++)
-        pos += snprintf(msg + pos, sizeof(msg) - pos, "%02X ", buf[i]);
+        for (uint16_t i = 0; i < len && pos < sizeof(msg) - 4; i++)
+            pos += snprintf(msg + pos, sizeof(msg) - pos, "%02X ", buf[i]);
 
-    pos += snprintf(msg + pos, sizeof(msg) - pos, "\r\n");
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, pos, 100);
-}
+        pos += snprintf(msg + pos, sizeof(msg) - pos, "\r\n");
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, pos, 100);
+    }
+#endif
 
-/* ================= UART DMA ================= */
+/**
+* \brief Restarts the UART DMA reception by re-enabling the receive-to-idle mode.
+ * \param huart1 Pointer to the UART handle for USART1.
+*/
 void UART_Restart_DMA(UART_HandleTypeDef *huart1)
 {
     HAL_UARTEx_ReceiveToIdle_DMA(huart1, uart1_rx_buffer, UART_RX_BUFFER_SIZE);
     __HAL_DMA_DISABLE_IT(huart1->hdmarx, DMA_IT_HT);
 }
 
-/* ================= MODBUS REQUEST ================= */
+/**
+* \brief Sends a Modbus request frame to the specified sensor address over UART.
+ * \param huart1 Pointer to the UART handle for USART1.
+ * \param addr The address of the sensor to request data from (0x01, 0x02 for ultrasonic sensors, 0x50-0x52 for IMUs).
+*/
 void Modbus_Send_Request(UART_HandleTypeDef *huart1, uint8_t addr)
 {
     tx_data[0] = addr;
@@ -75,38 +99,44 @@ void Modbus_Send_Request(UART_HandleTypeDef *huart1, uint8_t addr)
     tx_data[7] = crc >> 8;
 
     HAL_UART_Transmit(huart1, tx_data, 8, 1000);
+    HAL_UART_GetState(const UART_HandleTypeDef *huart)
 }
 
-/* ================= PRINT ================= */
-void print_data(uint8_t addr)
-{
-    char msg[256];
-    int len = 0;
-
-    if (addr == 0x01 || addr == 0x02)
+#ifdef DEBUG_PRINTS
+    // Print the parsed data for a given address.
+    void print_data(uint8_t addr)
     {
-        int idx = dist_index(addr);
-        len = snprintf(msg, sizeof(msg),
-            "[0x%02X] DIST: %.2f\r\n",
-            addr, distance[idx]);
+        char msg[256];
+        int len = 0;
+
+        if (addr == 0x01 || addr == 0x02)
+        {
+            int idx = dist_index(addr);
+            len = snprintf(msg, sizeof(msg),
+                "[0x%02X] DIST: %.2f\r\n",
+                addr, distance[idx]);
+        }
+        else if (addr >= 0x50 && addr <= 0x52)
+        {
+            int idx = imu_index(addr);
+            IMU_Data *d = &imu_data[idx];
+
+            len = snprintf(msg, sizeof(msg),
+                "[0x%02X] ACC: %.2f %.2f %.2f | GYRO: %.2f %.2f %.2f | ANG: %.2f %.2f %.2f\r\n",
+                addr,
+                d->acc[0], d->acc[1], d->acc[2],
+                d->gyro[0], d->gyro[1], d->gyro[2],
+                d->angle[0], d->angle[1], d->angle[2]);
+        }
+
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
     }
-    else if (addr >= 0x50 && addr <= 0x52)
-    {
-        int idx = imu_index(addr);
-        IMU_Data *d = &imu_data[idx];
+#endif
 
-        len = snprintf(msg, sizeof(msg),
-            "[0x%02X] ACC: %.2f %.2f %.2f | GYRO: %.2f %.2f %.2f | ANG: %.2f %.2f %.2f\r\n",
-            addr,
-            d->acc[0], d->acc[1], d->acc[2],
-            d->gyro[0], d->gyro[1], d->gyro[2],
-            d->angle[0], d->angle[1], d->angle[2]);
-    }
-
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
-}
-
-/* ================= BUFFER ================= */
+/**
+* \brief Consumes a specified number of bytes from the accumulated UART buffer, shifting the remaining data to the front.
+ * \param len The number of bytes to consume from the buffer.
+*/
 void buffer_consume(uint16_t len)
 {
     if (len >= rx_len) { rx_len = 0; return; }
@@ -115,12 +145,15 @@ void buffer_consume(uint16_t len)
     rx_len -= len;
 }
 
-/* ================= STREAM PROCESS ================= */
+/**
+* \brief Processes the accumulated UART data to extract valid frames and update the global data structures.
+ * \param huart1 Pointer to the UART handle for USART1, used for potential debug transmissions.
+*/
 void process_uart_stream(UART_HandleTypeDef *huart1)
 {
     while (rx_len >= 5)
     {
-        /* ===== HARD SYNC ===== */
+        // Check for valid address and function code (0x03)
         if (!(
             (rx_accum[0] == 0x01 || rx_accum[0] == 0x02 ||
              rx_accum[0] == 0x50 || rx_accum[0] == 0x51 || rx_accum[0] == 0x52)
@@ -130,52 +163,62 @@ void process_uart_stream(UART_HandleTypeDef *huart1)
             continue;
         }
 
-        /* ===== FRAME SIZE ===== */
+        // Check if we have received the full frame based on the byte count.
         uint8_t byte_count = rx_accum[2];
         uint16_t frame_size = 3 + byte_count + 2;
 
         if (rx_len < frame_size)
             return;
 
-        /* ===== CRC ===== */
+        // Validate CRC
         uint16_t crc_rx   = rx_accum[frame_size - 2] | (rx_accum[frame_size - 1] << 8);
         uint16_t crc_calc = crc16(rx_accum, frame_size - 2);
 
         if (crc_rx != crc_calc)
-        {
-            debug_print_bytes("CRC FAIL", rx_accum, frame_size);
+        {   
+            #ifdef DEBUG_PRINTS
+                debug_print_bytes("CRC FAIL", rx_accum, frame_size);
+            #endif
             buffer_consume(1);
             continue;
         }
 
-        /* ===== VALID FRAME ===== */
+        // Valid frame received, toggle LED
         HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+        data_recieved = 1;
 
         uint8_t addr = rx_accum[0];
 
-        /* DISTANCE */
+        // Update distance or IMU data based on the address.
         int d_idx = dist_index(addr);
         if (d_idx >= 0)
         {
             uint16_t value = (rx_accum[3] << 8) | rx_accum[4];
             distance[d_idx] = (float)value;
-
-            print_data(addr);
+            corrected_distance[d_idx] = apply_filters(d_idx, distance[d_idx]);
+            #ifdef DEBUG_PRINTS
+                print_data(addr);
+            #endif
         }
 
-        /* IMU */
         int i_idx = imu_index(addr);
         if (i_idx >= 0)
         {
             IMU_Parse(rx_accum, frame_size, &imu_data[i_idx]);
-            print_data(addr);
+            #ifdef DEBUG_PRINTS
+                print_data(addr);
+            #endif
         }
 
         buffer_consume(frame_size);
     }
 }
 
-/* ================= CALLBACKS ================= */
+/**
+* \brief UART receive complete callback function, called by the HAL when a UART reception is completed.
+ * \param huart1 Pointer to the UART handle for USART1, used to identify which UART triggered the callback.
+ * \param Size The number of bytes received in the current DMA transfer.
+*/
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart1, uint16_t Size)
 {
     if (huart1->Instance != USART1) return;
@@ -201,6 +244,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart1)
     UART_Restart_DMA(huart1);
 }
 
+/**
+* \brief Initializes the UART communication by starting the DMA reception for USART1.
+ * \param huart1 Pointer to the UART handle for USART1, used to set up the DMA reception.
+*/
 void UART_Comm_Init(UART_HandleTypeDef *huart1)
 {
     UART_Restart_DMA(huart1);
