@@ -93,7 +93,7 @@ float low_pass(float d, float d_prev, float alpha) {
  * \brief Corrects the raw distance measurement from the ultrasonic sensor based on the roll and pitch angles of the IMU sensor.
  * \param distance_mm The raw distance measurement in millimeters.
  * \param roll_rad The roll angle in radians.
- * \param pitch_rad The pitch angle in radians.
+ * \param pitch_rad The pitch angle in radians. 
  * \return The corrected height in centimeters.
  */
 float corrected_height(float distance_mm, float roll_rad, float pitch_rad)

@@ -59,6 +59,8 @@ uint32_t TxMailbox;
 uint8_t current_sensor_index = 0;
 uint32_t request_timestamp = 0;
 uint8_t data_recieved = 0;
+uint8_t imu_data_fresh[3];  // index 0=0x50, 1=0x51, 2=0x52
+uint8_t corrected_distance_fresh[2];  // index 0=0x01, 1=0x02
 
 /* USER CODE END PV */
 
@@ -143,21 +145,22 @@ int main(void)
 
       case STATE_SEND_REQUEST:
       {
-          Modbus_Send_Request(&huart1, sensor_addresses[current_sensor_index]);
-          request_timestamp = HAL_GetTick();
+        HAL_Delay(1);
+        Modbus_Send_Request(&huart1, sensor_addresses[current_sensor_index]);
+        request_timestamp = HAL_GetTick();
 
-          state = STATE_WAIT_RESPONSE;
-          break;
+        state = STATE_WAIT_RESPONSE;
+        break;
       }
 
       case STATE_WAIT_RESPONSE:
       {
-          if (((HAL_GetTick() - request_timestamp) > RESPONSE_TIMEOUT) || data_recieved) 
-          {
-              state = STATE_PROCESS_DATA;
-              data_recieved = 0;
-          }
-          break;
+        if (((HAL_GetTick() - request_timestamp) > ULTRASONIC_TIMEOUT_MS) || data_recieved) 
+        {
+          state = STATE_PROCESS_DATA;
+          data_recieved = 0;
+        }
+        break;
       }
 
       case STATE_PROCESS_DATA:
