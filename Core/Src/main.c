@@ -194,18 +194,15 @@ while (1)
           current_index = 0;
           fuse_orientation(&imu_data[0], &imu_data[1], &imu_data[2], &fusedOrientation);
           SendCANData(&hcan1, corrected_distance, &fusedOrientation);
-          // uint8_t can_data[8] = {
-          //     0xDE,
-          //     0xAD,
-          //     0xBE,
-          //     0xEF,
-          //     0x12,
-          //     0x34,
-          //     0x56,
-          //     0x78
-          // };
-          // while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0); 
-          // HAL_CAN_AddTxMessage(&hcan1, &TxHeader, can_data, &TxMailbox);
+          // #ifdef DEBUG_PRINTS
+            HAL_UART_Transmit(&huart2, (uint8_t)corrected_distance[0], sizeof(corrected_distance[0]), 100);
+            HAL_UART_Transmit(&huart2, (uint8_t)corrected_distance[1], sizeof(corrected_distance[1]), 100);
+            HAL_UART_Transmit(&huart2, (uint8_t)corrected_distance[1] + (uint8_t)corrected_distance[0] / 2, sizeof(corrected_distance[0]), 100);
+
+            HAL_UART_Transmit(&huart2, (uint8_t)fusedOrientation.global_roll, sizeof(fusedOrientation.global_roll), 100);
+            HAL_UART_Transmit(&huart2, (uint8_t)fusedOrientation.global_pitch, sizeof(fusedOrientation.global_pitch), 100);
+            HAL_UART_Transmit(&huart2, (uint8_t)fusedOrientation.global_yaw, sizeof(fusedOrientation.global_yaw), 100);
+          // #endif
         } 
         state = STATE_SEND_IMU;
         break;
