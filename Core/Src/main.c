@@ -13,11 +13,9 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <string.h>
-// #include "imu.h"
 #include "stm32l4xx_hal.h"
 #include "uart_comm.h"
-// #include "ultrasonicFilters.h"
-// #include "config.h"
+#include "can_comm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,22 +40,22 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
-CAN_TxHeaderTypeDef TxHeader;
 extern FusedOrientation fusedOrientation;
 extern IMU_Data imu_data[3]; // main: 0x50, Left: 0x51, Right: 0x52
-extern float corrected_distance; // 0x01, 0x02
+extern float corrected_distance[2]; // 0x01, 0x02
 
 typedef enum {
-  STATE_INIT = 0,
-  STATE_SEND_REQUEST,
-  STATE_WAIT_RESPONSE,
-  STATE_PROCESS_DATA
+  STATE_SEND_IMU = 0,
+  STATE_WAIT_IMU,
+  STATE_SEND_US,
+  STATE_WAIT_US,
+  STATE_PROCESS
 } AppState;
-AppState state = STATE_INIT;
+AppState state = STATE_SEND_IMU;
 
-uint32_t TxMailbox;
-uint8_t current_sensor_index = 0;
-uint32_t request_timestamp = 0;
+uint8_t  current_index = 0;
+uint32_t imu_timestamp = 0;
+uint32_t us_timestamp  = 0;
 uint8_t data_recieved = 0;
 uint8_t imu_data_fresh[3];  // index 0=0x50, 1=0x51, 2=0x52
 uint8_t corrected_distance_fresh[2];  // index 0=0x01, 1=0x02
@@ -114,90 +112,115 @@ int main(void)
   MX_CAN1_Init();
   MX_USART1_UART_Init();
   MX_TIM2_Init();
+  // CAN_TxHeaderTypeDef TxHeader;
+  // uint32_t TxMailbox;
+
+  // void initCAN(CAN_HandleTypeDef *hcan1)
+  // {
+  //     HAL_CAN_Start(hcan1);
+  //     TxHeader.StdId = 0x123;
+  //     TxHeader.ExtId = 0;
+  //     TxHeader.IDE = CAN_ID_STD;
+  //     TxHeader.RTR = CAN_RTR_DATA;
+  //     TxHeader.DLC = 8; 
+  //     TxHeader.TransmitGlobalTime = DISABLE;
+  // }
 
   /* USER CODE BEGIN 2 */
   UART_Comm_Init(&huart1);
+  initCAN(&hcan1);
   init_ultrasonic_filters();
-
-  /* Start CAN peripheral */
-  HAL_CAN_Start(&hcan1);
-  TxHeader.StdId = 0x123;
-  TxHeader.ExtId = 0;
-  TxHeader.IDE = CAN_ID_STD;
-  TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 2; 
-  TxHeader.TransmitGlobalTime = DISABLE;
-
   /* USER CODE END 2 */
-
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    switch(state)
+while (1)
+{
+    switch (state)
     {
-      case STATE_INIT:
+      case STATE_SEND_IMU:
       {
-          current_sensor_index = 0;
-          state = STATE_SEND_REQUEST;
+        if (imu_addresses[current_index] == 0x00)
+        {
+          state = STATE_PROCESS;
           break;
+        }
+        imu_data_fresh[current_index] = 0;
+        Modbus_Send_Request(&huart1, imu_addresses[current_index]);
+        imu_timestamp = HAL_GetTick();
+        state = STATE_WAIT_IMU;
+        break;
       }
 
-      case STATE_SEND_REQUEST:
+      case STATE_WAIT_IMU:
       {
+        if (imu_data_fresh[current_index] || (HAL_GetTick() - imu_timestamp) > IMU_TIMEOUT_MS)
+        {
+          imu_data_fresh[current_index] = 0;
+          state = STATE_SEND_US;
+        }
+        break;
+      }
+
+      case STATE_SEND_US:
+      {
+        if (us_addresses[current_index] == 0x00)
+        {
+          state = STATE_PROCESS;
+          break;
+        }
+        corrected_distance_fresh[current_index] = 0;
         HAL_Delay(1);
-        Modbus_Send_Request(&huart1, sensor_addresses[current_sensor_index]);
-        request_timestamp = HAL_GetTick();
-
-        state = STATE_WAIT_RESPONSE;
+        Modbus_Send_Request(&huart1, us_addresses[current_index]);
+        us_timestamp = HAL_GetTick();
+        state = STATE_WAIT_US;
         break;
       }
 
-      case STATE_WAIT_RESPONSE:
+      case STATE_WAIT_US:
       {
-        if (((HAL_GetTick() - request_timestamp) > ULTRASONIC_TIMEOUT_MS) || data_recieved) 
+        if (corrected_distance_fresh[current_index] || (HAL_GetTick() - us_timestamp) > ULTRASONIC_TIMEOUT_MS)
         {
-          state = STATE_PROCESS_DATA;
-          data_recieved = 0;
+          corrected_distance_fresh[current_index] = 0;
+          state = STATE_PROCESS;
         }
         break;
       }
 
-      case STATE_PROCESS_DATA:
+      case STATE_PROCESS:
       {
-        current_sensor_index++;
-        if(current_sensor_index >= SENSOR_COUNT)
+        current_index++;
+        if (current_index >= SENSOR_PAIR_COUNT)
         {
-          current_sensor_index = 0;
+          current_index = 0;
           fuse_orientation(&imu_data[0], &imu_data[1], &imu_data[2], &fusedOrientation);
-          // corrected_heightL = corrected_height(distance[0], deg_to_rad(imu_data[1].angle[]), deg_to_rad(FusedOrientation.global_pitch));
-          // corrected_heightR = corrected_height(distance[1], deg_to_rad(FusedOrientation.global_roll), deg_to_rad(FusedOrientation.global_pitch));
-
-          // #ifdef USE_SINGLE_IMU
-          //   fuse_orientation_singular(&imu_data[0], &FusedOrientation);
-          // #else
-          //   fuse_orientation_multiple(&imu_data[1], &imu_data[0], &imu_data[2], &FusedOrientation);
-          // #endif
-
-          // while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0);
-          // HAL_CAN_AddTxMessage(&hcan1, &TxHeader, (uint8_t*)(can_data), &TxMailbox);
-        }
-          
-          state = STATE_SEND_REQUEST;
-          break;
+          SendCANData(&hcan1, corrected_distance, &fusedOrientation);
+          // uint8_t can_data[8] = {
+          //     0xDE,
+          //     0xAD,
+          //     0xBE,
+          //     0xEF,
+          //     0x12,
+          //     0x34,
+          //     0x56,
+          //     0x78
+          // };
+          // while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0); 
+          // HAL_CAN_AddTxMessage(&hcan1, &TxHeader, can_data, &TxMailbox);
+        } 
+        state = STATE_SEND_IMU;
+        break;
       }
 
       default:
       {
-          state = STATE_INIT;
-          break;
+        current_index = 0;
+        state = STATE_SEND_IMU;
+        break;
       }
     }
   }
   /* USER CODE END 3 */
 }
-
-
 
 //! ------------------ DON'T EDIT BELOW THIS LINE ------------------
 /**
@@ -282,7 +305,7 @@ static void MX_CAN1_Init(void)
   hcan1.Init.TimeSeg1 = CAN_BS1_8TQ;
   hcan1.Init.TimeSeg2 = CAN_BS2_7TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
-  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
   hcan1.Init.AutoRetransmission = DISABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;

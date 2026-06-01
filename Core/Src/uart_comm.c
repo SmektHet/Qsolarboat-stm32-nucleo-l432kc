@@ -14,7 +14,6 @@ static uint8_t tx_data[8];
 uint8_t uart1_rx_buffer[UART_RX_BUFFER_SIZE];
 uint8_t rx_accum[ACCUM_BUFFER_SIZE];
 uint16_t rx_len = 0;
-extern uint8_t data_recieved;
 extern uint8_t imu_data_fresh[3];  // index 0=0x50, 1=0x51, 2=0x52
 extern uint8_t corrected_distance_fresh[2];  // index 0=0x01, 1=0x02
 
@@ -115,7 +114,7 @@ void Modbus_Send_Request(UART_HandleTypeDef *huart1, uint8_t addr)
             int idx = dist_index(addr);
             len = snprintf(msg, sizeof(msg),
                 "[0x%02X] DIST: %.2f\r\n",
-                addr, distance[idx]);
+                addr, corrected_distance[idx]);
         }
         else if (addr >= 0x50 && addr <= 0x52)
         {
@@ -185,8 +184,7 @@ void process_uart_stream(UART_HandleTypeDef *huart1)
         }
 
         // Valid frame received, toggle LED
-        // HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-        data_recieved = 1;
+        HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
 
         uint8_t addr = rx_accum[0];
 
@@ -197,8 +195,7 @@ void process_uart_stream(UART_HandleTypeDef *huart1)
             uint16_t value = (rx_accum[3] << 8) | rx_accum[4];
             distance[d_idx] = (float)value;
             corrected_distance[d_idx] = apply_filters(d_idx, distance[d_idx]);
-            // corrected_distance_fresh[d_idx] = 1;
-            HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+            corrected_distance_fresh[d_idx] = 1;
             #ifdef DEBUG_PRINTS
                 print_data(addr);
             #endif
@@ -208,7 +205,7 @@ void process_uart_stream(UART_HandleTypeDef *huart1)
         if (i_idx >= 0)
         {
             IMU_Parse(rx_accum, frame_size, &imu_data[i_idx]);
-            // imu_data_fresh[i_idx] = 1;
+            imu_data_fresh[i_idx] = 1;
             #ifdef DEBUG_PRINTS
                 print_data(addr);
             #endif

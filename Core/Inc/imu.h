@@ -14,9 +14,6 @@ typedef struct {
     float global_yaw;
     float global_pitch;
     float global_roll;
-
-    float foil_left_angle;   // degrees tilt on left side
-    float foil_right_angle;  // degrees tilt on right side
 } FusedOrientation;
 
 int IMU_Parse(uint8_t *rx, uint16_t len, IMU_Data *out);

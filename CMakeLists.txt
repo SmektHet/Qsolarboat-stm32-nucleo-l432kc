@@ -44,6 +44,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc/imu.h
     Core/Inc/ultrasonicFilters.h
     Core/Inc/config.h
+    Core/Inc/can_comm.h
 )
 
 # Add sources to executable
@@ -52,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/uart_comm.c
     Core/Src/imu.c
     Core/Src/ultrasonicFilters.c
+    Core/Src/can_comm.c
 )
 
 # Add include paths
