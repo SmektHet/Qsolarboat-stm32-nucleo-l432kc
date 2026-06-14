@@ -1,16 +1,7 @@
 #include "ultrasonicFilters.h"
-#include <string.h>
-#include <math.h>
 
-#define MEDIAN_SIZE       5     // Must stay odd
-#define OUTLIERTHRESHOLD  200.0f
-#define LOWPASSALPHA      0.4f
-
-// [sensor][history]
 float sensorData[2][MEDIAN_SIZE];
 uint8_t sensorInitialized[2] = {0};
-
-// Previous filtered outputs
 float sensorDataFiltered[2];
 
 /**
@@ -150,18 +141,13 @@ float low_pass(float d, float d_prev, float alpha)
 /**
  * \brief Corrects the raw distance measurement from the ultrasonic sensor based on the roll and pitch angles of the IMU sensor.
  * \param distance_mm The raw distance measurement in millimeters.
- * \param roll_rad The roll angle in radians.
- * \param pitch_rad The pitch angle in radians.
+ * \param roll The roll angle in radians.
+ * \param pitch The pitch angle in radians.
  * \return The corrected height in centimeters.
  */
-float corrected_height(float distance_mm,
-                       float roll_rad,
-                       float pitch_rad)
+float corrected_height(float distance_mm, float roll, float pitch)
 {
-    float cz =
-        cosf(pitch_rad) *
-        cosf(roll_rad);
-
+    float cz = cosf(deg_to_rad(pitch)) * cosf(deg_to_rad(roll));
     return (distance_mm * cz) / 10.0f;
 }
 
@@ -182,10 +168,8 @@ float deg_to_rad(float deg)
  * \param sensor_distance The distance between the two sensors.
  * \return The roll angle in radians.
  */
-float roll_ultra(float hL,
-                 float hR,
-                 float sensor_distance)
+float roll_ultra(float hL, float hR, float sensor_distance)
 {
-    return atan2f((hR - hL),
-                  sensor_distance);
+    float result = atan2f((hR - hL), sensor_distance);
+    return result * (180.0f / M_PI);
 }

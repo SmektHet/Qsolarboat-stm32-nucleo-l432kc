@@ -42,7 +42,7 @@ DMA_HandleTypeDef hdma_usart1_rx;
 /* USER CODE BEGIN PV */
 extern FusedOrientation fusedOrientation;
 extern IMU_Data imu_data[3]; // main: 0x50, Left: 0x51, Right: 0x52
-extern float corrected_distance[2]; // 0x01, 0x02
+extern float filtered_distance[2]; // 0x01, 0x02
 
 typedef enum {
   STATE_SEND_IMU = 0,
@@ -58,7 +58,8 @@ uint32_t imu_timestamp = 0;
 uint32_t us_timestamp  = 0;
 uint8_t data_recieved = 0;
 uint8_t imu_data_fresh[3];  // index 0=0x50, 1=0x51, 2=0x52
-uint8_t corrected_distance_fresh[2];  // index 0=0x01, 1=0x02
+uint8_t filtered_distance_fresh[2];  // index 0=0x01, 1=0x02 
+float corrected_distance[2]; // after applying height correction based on IMU angles
 
 /* USER CODE END PV */
 
@@ -112,19 +113,6 @@ int main(void)
   MX_CAN1_Init();
   MX_USART1_UART_Init();
   MX_TIM2_Init();
-  // CAN_TxHeaderTypeDef TxHeader;
-  // uint32_t TxMailbox;
-
-  // void initCAN(CAN_HandleTypeDef *hcan1)
-  // {
-  //     HAL_CAN_Start(hcan1);
-  //     TxHeader.StdId = 0x123;
-  //     TxHeader.ExtId = 0;
-  //     TxHeader.IDE = CAN_ID_STD;
-  //     TxHeader.RTR = CAN_RTR_DATA;
-  //     TxHeader.DLC = 8; 
-  //     TxHeader.TransmitGlobalTime = DISABLE;
-  // }
 
   /* USER CODE BEGIN 2 */
   UART_Comm_Init(&huart1);
@@ -168,7 +156,7 @@ while (1)
           state = STATE_PROCESS;
           break;
         }
-        corrected_distance_fresh[current_index] = 0;
+        filtered_distance_fresh[current_index] = 0;
         HAL_Delay(1);
         Modbus_Send_Request(&huart1, us_addresses[current_index]);
         us_timestamp = HAL_GetTick();
@@ -178,9 +166,9 @@ while (1)
 
       case STATE_WAIT_US:
       {
-        if (corrected_distance_fresh[current_index] || (HAL_GetTick() - us_timestamp) > ULTRASONIC_TIMEOUT_MS)
+        if (filtered_distance_fresh[current_index] || (HAL_GetTick() - us_timestamp) > ULTRASONIC_TIMEOUT_MS)
         {
-          corrected_distance_fresh[current_index] = 0;
+          filtered_distance_fresh[current_index] = 0;
           state = STATE_PROCESS;
         }
         break;
@@ -193,19 +181,29 @@ while (1)
         {
           current_index = 0;
           fuse_orientation(&imu_data[0], &imu_data[1], &imu_data[2], &fusedOrientation);
+
+          float roll_from_ultra = roll_ultra(filtered_distance[0], filtered_distance[1], SENSOR_DISTANCE_MM);
+          fusedOrientation.global_roll = fuse_roll(fusedOrientation.global_roll, roll_from_ultra);
+          corrected_distance[0] = corrected_height(filtered_distance[0], fusedOrientation.global_roll, fusedOrientation.global_pitch);
+          corrected_distance[1] = corrected_height(filtered_distance[1], fusedOrientation.global_roll, fusedOrientation.global_pitch);
+          
+          //! DATABASE TEST OUTPUT
+          char msg[256];
+          float left_height   = corrected_distance[0];
+          float right_height  = corrected_distance[1];
+          float global_height = (left_height + right_height) / 2.0f;
+
+          float roll_f  = fusedOrientation.global_roll;
+          float pitch_f = fusedOrientation.global_pitch;
+          float yaw_f   = fusedOrientation.global_yaw;
+          
+          int len = snprintf(msg, sizeof(msg),"%.2f, %.2f, %.2f, %.2f, %.2f, %.2f \r\n",
+          left_height, right_height, global_height, 
+          roll_f, pitch_f, yaw_f);
+          HAL_UART_Transmit(&huart2,(uint8_t*)msg,len,100);
+          //! END DATABASE TEST OUTPUT
+
           SendCANData(&hcan1, corrected_distance, &fusedOrientation);
-          // uint8_t can_data[8] = {
-          //     0xDE,
-          //     0xAD,
-          //     0xBE,
-          //     0xEF,
-          //     0x12,
-          //     0x34,
-          //     0x56,
-          //     0x78
-          // };
-          // while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0); 
-          // HAL_CAN_AddTxMessage(&hcan1, &TxHeader, can_data, &TxMailbox);
         } 
         state = STATE_SEND_IMU;
         break;

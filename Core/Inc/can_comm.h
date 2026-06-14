@@ -3,6 +3,8 @@
 
 #include "imu.h"
 #include "stm32l4xx_hal.h"
+#include "stm32l4xx_hal_can.h"
+#include <stdio.h>
 
 void initCAN(CAN_HandleTypeDef *hcan1);
 void SendCANData(CAN_HandleTypeDef *hcan1, const float *corrected_distance, const FusedOrientation *fusedOrientation);

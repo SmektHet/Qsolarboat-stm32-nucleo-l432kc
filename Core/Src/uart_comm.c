@@ -1,5 +1,4 @@
 #include "uart_comm.h"
-#include "stm32l4xx_hal_uart.h"
 
 #ifdef DEBUG_PRINTS
     extern UART_HandleTypeDef huart2;
@@ -8,14 +7,14 @@
 FusedOrientation fusedOrientation;
 IMU_Data imu_data[3];   // 0x50, 0x51, 0x52
 float distance[2];      // 0x01, 0x02
-float corrected_distance[2];
+float filtered_distance[2]; // after applying filters
 
 static uint8_t tx_data[8];
 uint8_t uart1_rx_buffer[UART_RX_BUFFER_SIZE];
 uint8_t rx_accum[ACCUM_BUFFER_SIZE];
 uint16_t rx_len = 0;
 extern uint8_t imu_data_fresh[3];  // index 0=0x50, 1=0x51, 2=0x52
-extern uint8_t corrected_distance_fresh[2];  // index 0=0x01, 1=0x02
+extern uint8_t filtered_distance_fresh[2];  // index 0=0x01, 1=0x02
 
 /**
 * \brief Maps an IMU address to its corresponding index in the imu_data array.
@@ -114,7 +113,7 @@ void Modbus_Send_Request(UART_HandleTypeDef *huart1, uint8_t addr)
             int idx = dist_index(addr);
             len = snprintf(msg, sizeof(msg),
                 "[0x%02X] DIST: %.2f\r\n",
-                addr, corrected_distance[idx]);
+                addr, filtered_distance[idx]);
         }
         else if (addr >= 0x50 && addr <= 0x52)
         {
@@ -194,8 +193,8 @@ void process_uart_stream(UART_HandleTypeDef *huart1)
         {
             uint16_t value = (rx_accum[3] << 8) | rx_accum[4];
             distance[d_idx] = (float)value;
-            corrected_distance[d_idx] = apply_filters(d_idx, distance[d_idx]);
-            corrected_distance_fresh[d_idx] = 1;
+            filtered_distance[d_idx] = apply_filters(d_idx, distance[d_idx]);
+            filtered_distance_fresh[d_idx] = 1;
             #ifdef DEBUG_PRINTS
                 print_data(addr);
             #endif

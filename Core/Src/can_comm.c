@@ -1,6 +1,4 @@
 #include "can_comm.h"
-#include "stm32l4xx_hal_can.h"
-#include <stdio.h>
 
 CAN_TxHeaderTypeDef TxHeader;
 uint32_t TxMailbox;
@@ -34,7 +32,7 @@ void SendCANData(CAN_HandleTypeDef *hcan1, const float *corrected_distance, cons
 #ifdef DEBUG_PRINTS
     char debug_msg[256];
     int len = snprintf(debug_msg, sizeof(debug_msg),
-                       "HEIGHTS -> L: %.2f cm (%d) | R: %.2f cm (%d) | G: %.2f cm (%d)\r\n",
+                       "HEIGHTS -> L: %.2f mm (%d) | R: %.2f mm (%d) | G: %.2f mm (%d)\r\n",
                        left_height, h_left, right_height, h_right, global_height, h_global);
     HAL_UART_Transmit(&huart2,(uint8_t*)debug_msg,len,100);
 #endif

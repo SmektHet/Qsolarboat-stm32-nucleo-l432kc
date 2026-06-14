@@ -1,0 +1,82 @@
+@startuml
+!pragma layout smetana
+left to right direction
+
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
+skinparam ArrowColor #666360
+skinparam ArrowThickness 1.5
+skinparam RoundCorner 12
+skinparam shadowing false
+skinparam BackgroundColor #F5F4F0
+
+skinparam component {
+  BorderThickness 0
+  FontColor white
+  BorderColor transparent
+}
+
+skinparam note {
+  BackgroundColor #EDEDEA
+  BorderColor #CCCBC5
+  FontColor #3d3d3a
+  FontSize 12
+}
+
+title IMU Fusion & CAN Output
+
+component "**h_left  |  h_right**\n(from Ultrasonic pipeline)" as IN #3D3D3A
+
+together {
+  component "**Left IMU**\npitch  roll" as IMU_L #3B3090
+  component "**Center IMU**\nglobal attitude" as IMU_MID #3B3090
+  component "**Right IMU**\npitch  roll" as IMU_R #3B3090
+}
+
+together {
+  component "**IMU orientation fusion**\nYaw:   atan2 circular mean\nRoll:  (FL + MID + FR) / 3\nPitch: (FL + MID + FR) / 3" as FUSE #5C1212
+  component "**Ultrasonic roll calculation**\natan2(h_right - h_left,\nsensor_dist)" as ROLL_ULTRA #0A5C44
+  component "**Height average**\nh_global = (h_L + h_R) / 2" as H_AVG #3D3D3A
+}
+
+together {
+  component "**Roll fusion**\n0.85 x IMU roll\n+ 0.15 x ultra roll" as FUSE_ROLL #6B5000
+  component " " as SPACER #F5F4F0
+}
+
+together {
+  component "**Tilt-compensated heights (L & R)**\nh = d x cos(p) x cos(r)" as TILT_L #0F4F8A
+}
+
+note bottom of FUSE_ROLL
+  85% trust in IMU roll
+  15% trust in ultra roll
+end note
+
+component "**CAN bus output**\n0x100  :  h_left  |  h_right  |  h_global\n0x101  :  roll    |  pitch    |  yaw" as CANOUT #1A1A40
+
+note bottom of CANOUT 
+  All values x100 -> int16
+  big-endian, 2 bytes each
+  6 bytes per frame
+end note
+
+IN          --> ROLL_ULTRA
+IMU_L       ..> FUSE
+IMU_MID     ..> FUSE
+IMU_R       ..> FUSE
+FUSE        ..> FUSE_ROLL : Roll
+ROLL_ULTRA  ..> FUSE_ROLL
+H_AVG       --> CANOUT 
+IN          --> TILT_L
+FUSE_ROLL   ..> CANOUT : Roll
+FUSE_ROLL   ..> TILT_L : Roll
+FUSE        ..> TILT_L : Pitch
+TILT_L      --> CANOUT
+TILT_L      --> H_AVG 
+FUSE        ..> CANOUT : Pitch & Yaw
+
+legend bottom
+  -- ultrasonic data     ... IMU data
+endlegend
+@enduml

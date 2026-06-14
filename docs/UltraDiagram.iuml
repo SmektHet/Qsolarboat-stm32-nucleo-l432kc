@@ -1,0 +1,59 @@
+@startuml
+!pragma layout smetana
+left to right direction
+
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
+skinparam ArrowColor #666360
+skinparam ArrowThickness 1.5
+skinparam RoundCorner 12
+skinparam shadowing false
+skinparam BackgroundColor #F5F4F0
+
+skinparam component {
+  BorderThickness 0
+  FontColor white
+  BorderColor transparent
+}
+
+skinparam note {
+  BackgroundColor #EDEDEA
+  BorderColor #CCCBC5
+  FontColor #3d3d3a
+  FontSize 12
+}
+
+title Ultrasonic Filter Pipeline
+
+together {
+  component "**Raw ultrasonic (L)**\nd_measured (noisy)" as RAW_L #3D3D3A
+  component "**Raw ultrasonic (R)**\nd_measured (noisy)" as RAW_R #3D3D3A
+}
+
+together {
+  component "**Outlier rejection (L)**\n|d - d_prev| > 200" as OUT_L #7A1818
+  component "**Outlier rejection (R)**\n|d - d_prev| > 200" as OUT_R #7A1818
+}
+
+together {
+  component "**Median filter (L)**\n5 samples" as MED_L #6B5000
+  component "**Median filter (R)**\n5 samples" as MED_R #6B5000
+}
+
+together {
+  component "**Low-pass filter (L)**\nalpha = 0.4" as LPF_L #0A5C44
+  component "**Low-pass filter (R)**\nalpha = 0.4" as LPF_R #0A5C44
+}
+
+component "**h_left  |  h_right**\n(to fusion diagram)" as OUT #3D3D3A
+
+RAW_L  --> OUT_L
+RAW_R  --> OUT_R
+OUT_L  --> MED_L
+OUT_R  --> MED_R
+MED_L  --> LPF_L
+MED_R  --> LPF_R
+LPF_L  --> OUT
+LPF_R  --> OUT
+
+@enduml
